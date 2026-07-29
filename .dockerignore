@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!src/
+!src/**
+!fixtures/
+!fixtures/**

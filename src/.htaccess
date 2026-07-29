@@ -1,0 +1,12 @@
+# Enable rewrite engine
+RewriteEngine On
+
+# The B flag preserves encoded traversal sequences in the rewrite backreference.
+# modern.php deliberately performs the second decode for this test case.
+RewriteRule ^files/view/(.*)$ modern.php?file=$1 [B,L,QSA]
+
+# Modern URL format for documents
+RewriteRule ^api/documents/(.*)$ modern.php?file=$1&type=api [B,L,QSA]
+
+# Accept PATH_INFO for path-based testing
+AcceptPathInfo On

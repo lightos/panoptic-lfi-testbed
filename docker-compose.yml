@@ -1,0 +1,26 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 100
+    mem_limit: 256m
+    ports:
+      - "127.0.0.1:8080:80"
+    tmpfs:
+      - /tmp:mode=1777
+      - /var/run/apache2:mode=0755
+    healthcheck:
+      test:
+        - CMD
+        - php
+        - -r
+        - 'exit(@file_get_contents("http://127.0.0.1/health.php") === "ok\n" ? 0 : 1);'
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s

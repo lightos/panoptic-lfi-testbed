@@ -1,0 +1,643 @@
+#!/usr/bin/env python3
+"""Black-box Panoptic E2E suite for the deliberately vulnerable testbed."""
+
+from __future__ import annotations
+
+import csv
+import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+LISTS = ROOT / "tests" / "lists"
+BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8080").rstrip("/")
+PROOF_PATH = "/opt/panoptic-fixtures/proof.txt"
+PASSWD_PATH = "/etc/passwd"
+HOME_PATH = "/home/panoptic/.bash_history"
+MYSQL_INDEX_PATH = "/var/log/mysql-bin.index"
+MYSQL_LOG_PATH = "/var/log/mysql-bin.000001"
+WINDOWS_PATH = r"C:\Windows\win.ini"
+
+
+@dataclass(frozen=True)
+class ScanCase:
+    name: str
+    args: tuple[str, ...]
+    expected: frozenset[str]
+    list_file: str = "proof.txt"
+    exact: bool = True
+    assert_redacted: bool = False
+
+
+def panoptic_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    panoptic_dir = env.get("PANOPTIC_DIR")
+    if panoptic_dir:
+        package = Path(panoptic_dir).resolve() / "panoptic" / "__init__.py"
+        if not package.is_file():
+            raise SystemExit(
+                f"PANOPTIC_DIR does not contain the Panoptic package: {panoptic_dir}"
+            )
+        existing = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = str(package.parents[1]) + (
+            os.pathsep + existing if existing else ""
+        )
+    return env
+
+
+def wait_until_healthy(timeout: float = 45.0) -> None:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with opener.open(f"{BASE_URL}/health.php", timeout=2) as response:
+                if response.status == 200 and response.read() == b"ok\n":
+                    return
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = exc
+        time.sleep(0.5)
+    raise RuntimeError(f"testbed did not become healthy: {last_error}")
+
+
+def invoke(
+    *,
+    name: str,
+    args: tuple[str, ...],
+    list_file: str,
+    work_dir: Path,
+    env: dict[str, str],
+    output_format: str = "json",
+    output_name: str = "results.json",
+    resume_file: Path | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    output_path = work_dir / output_name
+    command = [
+        sys.executable,
+        "-m",
+        "panoptic",
+        "--quiet",
+        "--auto",
+        "--ignore-proxy",
+        "--timeout",
+        "3",
+        "--retries",
+        "0",
+        "--concurrency",
+        "4",
+        "--output-format",
+        output_format,
+        "--output-file",
+        str(output_path),
+        *args,
+        "--load",
+        str(LISTS / list_file),
+    ]
+    if resume_file is not None:
+        command.extend(("--resume-file", str(resume_file)))
+
+    completed = subprocess.run(
+        command,
+        cwd=work_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(
+            f"{name}: Panoptic exited {completed.returncode}\n"
+            f"command: {' '.join(command)}\n"
+            f"stdout:\n{completed.stdout}\n"
+            f"stderr:\n{completed.stderr}"
+        )
+    if not output_path.is_file():
+        raise AssertionError(f"{name}: Panoptic did not create {output_path}")
+    if os.name == "posix" and stat.S_IMODE(output_path.stat().st_mode) != 0o600:
+        raise AssertionError(f"{name}: result file mode is not 0600")
+    return completed, output_path
+
+
+def load_json(path: Path) -> list[dict[str, object]]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, list):
+        raise AssertionError(f"{path}: expected a JSON list")
+    return value
+
+
+def assert_locations(
+    *,
+    name: str,
+    results: list[dict[str, object]],
+    expected: frozenset[str],
+    exact: bool,
+) -> None:
+    locations = {str(result.get("location")) for result in results}
+    if exact and locations != expected:
+        raise AssertionError(
+            f"{name}: expected {sorted(expected)}, got {sorted(locations)}"
+        )
+    if not exact and not expected.issubset(locations):
+        raise AssertionError(
+            f"{name}: missing {sorted(expected - locations)}; got {sorted(locations)}"
+        )
+    if any(result.get("found") is not True for result in results):
+        raise AssertionError(f"{name}: every serialized result must be a finding")
+
+
+def run_matrix(temp_root: Path, env: dict[str, str]) -> None:
+    proof = frozenset({PROOF_PATH})
+    empty = frozenset()
+    cases = (
+        ScanCase(
+            "get-query",
+            (
+                "--url",
+                f"{BASE_URL}/classic.php?file=test.txt",
+                "--param",
+                "file",
+                "--skip-parsing",
+            ),
+            proof,
+            assert_redacted=True,
+        ),
+        ScanCase(
+            "post-form",
+            (
+                "--url",
+                f"{BASE_URL}/post.php",
+                "--data",
+                "file=test.txt&id=1",
+                "--param",
+                "file",
+                "--skip-parsing",
+            ),
+            proof,
+            assert_redacted=True,
+        ),
+        ScanCase(
+            "post-json",
+            (
+                "--url",
+                f"{BASE_URL}/json_api.php",
+                "--data",
+                '{"file":"FUZZ"}',
+                "--skip-parsing",
+            ),
+            proof,
+            assert_redacted=True,
+        ),
+        ScanCase(
+            "post-nested-json",
+            (
+                "--url",
+                f"{BASE_URL}/nested_json.php",
+                "--data",
+                '{"request":{"template":"FUZZ"}}',
+                "--skip-parsing",
+            ),
+            proof,
+            assert_redacted=True,
+        ),
+        ScanCase(
+            "post-raw-body",
+            ("--url", f"{BASE_URL}/raw_body.php", "--data", "FUZZ", "--skip-parsing"),
+            proof,
+            assert_redacted=True,
+        ),
+        ScanCase(
+            "cookie-fuzz",
+            (
+                "--url",
+                f"{BASE_URL}/cookie.php",
+                "--header",
+                "Cookie: lang=FUZZ",
+                "--skip-parsing",
+            ),
+            proof,
+        ),
+        ScanCase(
+            "custom-header-fuzz",
+            (
+                "--url",
+                f"{BASE_URL}/header.php",
+                "--header",
+                "X-Template: FUZZ",
+                "--skip-parsing",
+            ),
+            proof,
+        ),
+        ScanCase(
+            "base64",
+            (
+                "--url",
+                f"{BASE_URL}/base64.php?file=dGVzdC50eHQ=",
+                "--param",
+                "file",
+                "--base64",
+                "--skip-parsing",
+            ),
+            proof,
+            assert_redacted=True,
+        ),
+        ScanCase(
+            "path-info",
+            (
+                "--url",
+                f"{BASE_URL}/pathinfo.php/placeholder.txt",
+                "--path-based",
+                "--skip-parsing",
+            ),
+            proof,
+        ),
+        ScanCase(
+            "rewritten-double-encoded-path",
+            (
+                "--url",
+                f"{BASE_URL}/files/view/test.txt",
+                "--path-based",
+                "--replace-slash",
+                "%252F",
+                "--skip-parsing",
+            ),
+            proof,
+        ),
+        ScanCase(
+            "nested-filter-bypass",
+            (
+                "--url",
+                f"{BASE_URL}/filtered.php?file=test.txt",
+                "--param",
+                "file",
+                "--prefix",
+                "....//",
+                "--multiplier",
+                "4",
+                "--skip-parsing",
+            ),
+            proof,
+            assert_redacted=True,
+        ),
+        ScanCase(
+            "split-extension",
+            (
+                "--url",
+                f"{BASE_URL}/param.php?file=test&type=txt",
+                "--param",
+                "file",
+                "--ext-param",
+                "type",
+                "--skip-parsing",
+            ),
+            proof,
+            assert_redacted=True,
+        ),
+        ScanCase(
+            "slash-replacement",
+            (
+                "--url",
+                f"{BASE_URL}/classic.php?file=test.txt",
+                "--param",
+                "file",
+                "--replace-slash",
+                "/./",
+                "--skip-parsing",
+            ),
+            proof,
+        ),
+        ScanCase(
+            "double-decoded-query",
+            (
+                "--url",
+                f"{BASE_URL}/double_decode.php?file=test.txt",
+                "--param",
+                "file",
+                "--replace-slash",
+                "%252F",
+                "--skip-parsing",
+            ),
+            proof,
+            assert_redacted=True,
+        ),
+        ScanCase(
+            "legacy-null-byte-simulator",
+            (
+                "--url",
+                f"{BASE_URL}/legacy_nullbyte.php?file=test.txt",
+                "--param",
+                "file",
+                "--postfix",
+                "%00",
+                "--skip-parsing",
+            ),
+            proof,
+            assert_redacted=True,
+        ),
+        ScanCase(
+            "status-code-default",
+            (
+                "--url",
+                f"{BASE_URL}/status.php?file=test.txt",
+                "--param",
+                "file",
+                "--skip-parsing",
+            ),
+            proof,
+        ),
+        ScanCase(
+            "status-code-match",
+            (
+                "--url",
+                f"{BASE_URL}/status.php?file=test.txt",
+                "--param",
+                "file",
+                "--match-code",
+                "200",
+                "--skip-parsing",
+            ),
+            proof,
+        ),
+        ScanCase(
+            "status-code-filter",
+            (
+                "--url",
+                f"{BASE_URL}/status.php?file=test.txt",
+                "--param",
+                "file",
+                "--filter-code",
+                "200",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
+        ScanCase(
+            "match-string",
+            (
+                "--url",
+                f"{BASE_URL}/classic.php?file=test.txt",
+                "--param",
+                "file",
+                "--match-string",
+                "PANOPTIC_E2E_PROOF",
+                "--skip-parsing",
+            ),
+            proof,
+        ),
+        ScanCase(
+            "bad-string",
+            (
+                "--url",
+                f"{BASE_URL}/classic.php?file=test.txt",
+                "--param",
+                "file",
+                "--bad-string",
+                "PANOPTIC_E2E_PROOF",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
+        ScanCase(
+            "redirect-disabled",
+            (
+                "--url",
+                f"{BASE_URL}/redirect.php?file=test.txt",
+                "--param",
+                "file",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
+        ScanCase(
+            "redirect-enabled",
+            (
+                "--url",
+                f"{BASE_URL}/redirect.php?file=test.txt",
+                "--param",
+                "file",
+                "--follow-redirects",
+                "--skip-parsing",
+            ),
+            proof,
+        ),
+        ScanCase(
+            "auth-denied",
+            (
+                "--url",
+                f"{BASE_URL}/auth.php?file=test.txt",
+                "--param",
+                "file",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
+        ScanCase(
+            "auth-cookie",
+            (
+                "--url",
+                f"{BASE_URL}/auth.php?file=test.txt",
+                "--param",
+                "file",
+                "--cookie",
+                "panoptic_auth=allowed",
+                "--skip-parsing",
+            ),
+            proof,
+        ),
+        ScanCase(
+            "safe-negative-control",
+            (
+                "--url",
+                f"{BASE_URL}/safe.php?file=test.txt",
+                "--param",
+                "file",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
+        ScanCase(
+            "windows-json-simulator",
+            (
+                "--url",
+                f"{BASE_URL}/windows_json.php",
+                "--data",
+                '{"request":{"path":"FUZZ"}}',
+                "--skip-parsing",
+            ),
+            frozenset({WINDOWS_PATH}),
+            list_file="windows.txt",
+        ),
+        ScanCase(
+            "passwd-home-expansion",
+            (
+                "--url",
+                f"{BASE_URL}/parser.php?file=test.txt",
+                "--param",
+                "file",
+                "--concurrency",
+                "16",
+            ),
+            frozenset({PASSWD_PATH, HOME_PATH}),
+            list_file="passwd.txt",
+        ),
+        ScanCase(
+            "mysql-binlog-expansion",
+            (
+                "--url",
+                f"{BASE_URL}/parser.php?file=test.txt",
+                "--param",
+                "file",
+            ),
+            frozenset({MYSQL_INDEX_PATH, MYSQL_LOG_PATH}),
+            list_file="mysql-index.txt",
+        ),
+    )
+
+    for case in cases:
+        case_dir = temp_root / case.name
+        case_dir.mkdir()
+        _, output_path = invoke(
+            name=case.name,
+            args=case.args,
+            list_file=case.list_file,
+            work_dir=case_dir,
+            env=env,
+        )
+        results = load_json(output_path)
+        assert_locations(
+            name=case.name, results=results, expected=case.expected, exact=case.exact
+        )
+        if case.assert_redacted and results:
+            serialized_url = str(results[0].get("url"))
+            if "***" not in serialized_url or PROOF_PATH in serialized_url:
+                raise AssertionError(
+                    f"{case.name}: injected value was not redacted: {serialized_url}"
+                )
+        print(f"[PASS] {case.name}: {len(results)} finding(s)")
+
+
+def run_artifact_checks(temp_root: Path, env: dict[str, str]) -> None:
+    args = (
+        "--url",
+        f"{BASE_URL}/classic.php?file=test.txt",
+        "--param",
+        "file",
+        "--skip-parsing",
+        "--write-files",
+    )
+    work_dir = temp_root / "write-files"
+    work_dir.mkdir()
+    _, output_path = invoke(
+        name="write-files",
+        args=args,
+        list_file="proof.txt",
+        work_dir=work_dir,
+        env=env,
+    )
+    assert_locations(
+        name="write-files",
+        results=load_json(output_path),
+        expected=frozenset({PROOF_PATH}),
+        exact=True,
+    )
+    saved = list((work_dir / "output").rglob("*.txt"))
+    if len(saved) != 1 or "PANOPTIC_E2E_PROOF_4f6c8a71" not in saved[0].read_text(
+        encoding="utf-8"
+    ):
+        raise AssertionError(f"write-files: expected one saved proof file, got {saved}")
+    if os.name == "posix" and stat.S_IMODE(saved[0].stat().st_mode) != 0o600:
+        raise AssertionError("write-files: saved finding mode is not 0600")
+    print("[PASS] write-files and secure artifact modes")
+
+    csv_dir = temp_root / "csv-output"
+    csv_dir.mkdir()
+    _, csv_path = invoke(
+        name="csv-output",
+        args=(
+            "--url",
+            f"{BASE_URL}/classic.php?file=test.txt",
+            "--param",
+            "file",
+            "--skip-parsing",
+        ),
+        list_file="proof.txt",
+        work_dir=csv_dir,
+        env=env,
+        output_format="csv",
+        output_name="results.csv",
+    )
+    with csv_path.open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
+    if len(rows) != 1 or rows[0].get("location") != PROOF_PATH:
+        raise AssertionError(f"csv-output: unexpected rows: {rows}")
+    print("[PASS] csv-output")
+
+    resume_dir = temp_root / "resume"
+    resume_dir.mkdir()
+    resume_file = resume_dir / "scan.checkpoint"
+    base_args = (
+        "--url",
+        f"{BASE_URL}/classic.php?file=test.txt",
+        "--param",
+        "file",
+        "--skip-parsing",
+    )
+    _, first_path = invoke(
+        name="resume-first",
+        args=base_args,
+        list_file="proof.txt",
+        work_dir=resume_dir,
+        env=env,
+        output_name="first.json",
+        resume_file=resume_file,
+    )
+    assert_locations(
+        name="resume-first",
+        results=load_json(first_path),
+        expected=frozenset({PROOF_PATH}),
+        exact=True,
+    )
+    _, second_path = invoke(
+        name="resume-second",
+        args=base_args,
+        list_file="proof.txt",
+        work_dir=resume_dir,
+        env=env,
+        output_name="second.json",
+        resume_file=resume_file,
+    )
+    assert_locations(
+        name="resume-second",
+        results=load_json(second_path),
+        expected=frozenset(),
+        exact=True,
+    )
+    checkpoint = json.loads(resume_file.read_text(encoding="utf-8"))
+    if checkpoint.get("version") != 1 or len(checkpoint.get("completed_ids", [])) != 1:
+        raise AssertionError(f"resume: malformed checkpoint: {checkpoint}")
+    if BASE_URL in resume_file.read_text(encoding="utf-8"):
+        raise AssertionError("resume: checkpoint leaked the target URL")
+    print("[PASS] resume checkpoint")
+
+
+def main() -> int:
+    env = panoptic_environment()
+    wait_until_healthy()
+    with tempfile.TemporaryDirectory(prefix="panoptic-testbed-e2e-") as directory:
+        temp_root = Path(directory)
+        run_matrix(temp_root, env)
+        run_artifact_checks(temp_root, env)
+    print("All Panoptic E2E cases passed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

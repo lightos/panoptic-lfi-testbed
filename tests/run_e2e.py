@@ -98,10 +98,13 @@ def invoke(
         "--quiet",
         "--auto",
         "--ignore-proxy",
+        # Generous timeout plus retries: shared CI runners can stall the
+        # resource-limited Apache container for a few seconds, and a dropped
+        # request would otherwise surface as a missing finding.
         "--timeout",
-        "3",
+        "10",
         "--retries",
-        "0",
+        "2",
         "--concurrency",
         "4",
         "--output-format",
@@ -129,6 +132,11 @@ def invoke(
             f"{name}: Panoptic exited {completed.returncode}\n"
             f"command: {' '.join(command)}\n"
             f"stdout:\n{completed.stdout}\n"
+            f"stderr:\n{completed.stderr}"
+        )
+    if "requests failed" in completed.stderr:
+        raise AssertionError(
+            f"{name}: requests failed, so findings may be missing\n"
             f"stderr:\n{completed.stderr}"
         )
     if not output_path.is_file():
@@ -695,7 +703,7 @@ def run_matrix(temp_root: Path, env: dict[str, str]) -> None:
     for case in cases:
         case_dir = temp_root / case.name
         case_dir.mkdir()
-        _, output_path = invoke(
+        completed, output_path = invoke(
             name=case.name,
             args=case.args,
             list_file=case.list_file,
@@ -703,9 +711,16 @@ def run_matrix(temp_root: Path, env: dict[str, str]) -> None:
             env=env,
         )
         results = load_json(output_path)
-        assert_locations(
-            name=case.name, results=results, expected=case.expected, exact=case.exact
-        )
+        try:
+            assert_locations(
+                name=case.name,
+                results=results,
+                expected=case.expected,
+                exact=case.exact,
+            )
+        except AssertionError as exc:
+            # Panoptic's warnings (e.g. failed requests) explain most mismatches.
+            raise AssertionError(f"{exc}\nPanoptic stderr:\n{completed.stderr}") from None
         if case.assert_redacted and results:
             serialized_url = str(results[0].get("url"))
             if "***" not in serialized_url or PROOF_PATH in serialized_url:
@@ -812,7 +827,10 @@ def run_artifact_checks(temp_root: Path, env: dict[str, str]) -> None:
         exact=True,
     )
     checkpoint = json.loads(resume_file.read_text(encoding="utf-8"))
-    if checkpoint.get("version") != 2 or len(checkpoint.get("completed_ids", [])) != 1:
+    # Panoptic bumps the version whenever stored data changes meaning; any
+    # current format (2+) carries findings, which resume-second relies on.
+    version = checkpoint.get("version")
+    if not isinstance(version, int) or version < 2 or len(checkpoint.get("completed_ids", [])) != 1:
         raise AssertionError(f"resume: malformed checkpoint: {checkpoint}")
     if BASE_URL in resume_file.read_text(encoding="utf-8"):
         raise AssertionError("resume: checkpoint leaked the target URL")

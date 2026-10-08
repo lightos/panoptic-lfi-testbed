@@ -695,7 +695,7 @@ def run_matrix(temp_root: Path, env: dict[str, str]) -> None:
     for case in cases:
         case_dir = temp_root / case.name
         case_dir.mkdir()
-        _, output_path = invoke(
+        completed, output_path = invoke(
             name=case.name,
             args=case.args,
             list_file=case.list_file,
@@ -703,9 +703,16 @@ def run_matrix(temp_root: Path, env: dict[str, str]) -> None:
             env=env,
         )
         results = load_json(output_path)
-        assert_locations(
-            name=case.name, results=results, expected=case.expected, exact=case.exact
-        )
+        try:
+            assert_locations(
+                name=case.name,
+                results=results,
+                expected=case.expected,
+                exact=case.exact,
+            )
+        except AssertionError as exc:
+            # Panoptic's warnings (e.g. failed requests) explain most mismatches.
+            raise AssertionError(f"{exc}\nPanoptic stderr:\n{completed.stderr}") from None
         if case.assert_redacted and results:
             serialized_url = str(results[0].get("url"))
             if "***" not in serialized_url or PROOF_PATH in serialized_url:

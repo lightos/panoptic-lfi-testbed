@@ -98,10 +98,13 @@ def invoke(
         "--quiet",
         "--auto",
         "--ignore-proxy",
+        # Generous timeout plus retries: shared CI runners can stall the
+        # resource-limited Apache container for a few seconds, and a dropped
+        # request would otherwise surface as a missing finding.
         "--timeout",
-        "3",
+        "10",
         "--retries",
-        "0",
+        "2",
         "--concurrency",
         "4",
         "--output-format",
@@ -129,6 +132,11 @@ def invoke(
             f"{name}: Panoptic exited {completed.returncode}\n"
             f"command: {' '.join(command)}\n"
             f"stdout:\n{completed.stdout}\n"
+            f"stderr:\n{completed.stderr}"
+        )
+    if "requests failed" in completed.stderr:
+        raise AssertionError(
+            f"{name}: requests failed, so findings may be missing\n"
             f"stderr:\n{completed.stderr}"
         )
     if not output_path.is_file():

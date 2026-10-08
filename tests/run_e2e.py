@@ -617,11 +617,11 @@ def run_artifact_checks(temp_root: Path, env: dict[str, str]) -> None:
     assert_locations(
         name="resume-second",
         results=load_json(second_path),
-        expected=frozenset(),
+        expected=frozenset({PROOF_PATH}),
         exact=True,
     )
     checkpoint = json.loads(resume_file.read_text(encoding="utf-8"))
-    if checkpoint.get("version") != 1 or len(checkpoint.get("completed_ids", [])) != 1:
+    if checkpoint.get("version") != 2 or len(checkpoint.get("completed_ids", [])) != 1:
         raise AssertionError(f"resume: malformed checkpoint: {checkpoint}")
     if BASE_URL in resume_file.read_text(encoding="utf-8"):
         raise AssertionError("resume: checkpoint leaked the target URL")

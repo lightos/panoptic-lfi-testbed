@@ -8,7 +8,7 @@ real HTTP endpoints. It does not mock Panoptic's network layer.
 Clone Panoptic beside this repository:
 
 ```bash
-git clone --branch hardening-review --single-branch \
+git clone \
   git@github.com:lightos/Panoptic.git ../Panoptic
 ```
 
@@ -55,12 +55,9 @@ The runner uses temporary output directories and verifies:
 
 ## GitHub Actions
 
-`.github/workflows/e2e.yml` checks out the Panoptic `hardening-review` branch,
-installs it, and runs the same script. The workflow has read-only repository
-permissions.
-
-After `hardening-review` merges, change the workflow reference to `main`, or
-keep a scheduled/manual workflow input when testing a release branch.
+`.github/workflows/e2e.yml` checks out Panoptic `main`, installs it, and runs
+the same script. Use the manual `panoptic_ref` input to test another branch,
+tag, or commit. The workflow has read-only repository permissions.
 
 ## Adding a case
 

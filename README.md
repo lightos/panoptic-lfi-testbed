@@ -42,10 +42,10 @@ container, runs the black-box matrix, and removes the container afterward.
 PANOPTIC_DIR=/path/to/Panoptic ./tests/e2e.sh
 ```
 
-To test the current hardening branch:
+To test Panoptic `main`:
 
 ```bash
-git clone --branch hardening-review --single-branch \
+git clone \
   git@github.com:lightos/Panoptic.git ../Panoptic
 PANOPTIC_DIR=../Panoptic ./tests/e2e.sh
 ```

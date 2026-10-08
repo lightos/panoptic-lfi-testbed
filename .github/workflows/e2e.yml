@@ -9,7 +9,7 @@ on:
       panoptic_ref:
         description: Panoptic branch, tag, or commit to test
         required: false
-        default: hardening-review
+        default: main
 
 permissions:
   contents: read
@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: lightos/Panoptic
-          ref: ${{ inputs.panoptic_ref || 'hardening-review' }}
+          ref: ${{ inputs.panoptic_ref || 'main' }}
           path: Panoptic
 
       - name: Set up Python

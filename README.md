@@ -9,7 +9,7 @@ supported by Panoptic.
 > [!CAUTION]
 > Never deploy this application. The supplied Compose configuration binds only
 > to `127.0.0.1` and runs with a read-only filesystem. Do not weaken those
-> controls or expose port 8080 to another host.
+> controls or expose ports 8080 or 8081 to another host.
 
 ## Quick start
 
@@ -17,7 +17,8 @@ supported by Panoptic.
 docker compose up --build --wait
 ```
 
-The testbed is then available at <http://127.0.0.1:8080>. Stop it when
+The testbed is then available at <http://127.0.0.1:8080> (Apache) and
+<http://127.0.0.1:8081> (the raw-path service described below). Stop it when
 finished:
 
 ```bash
@@ -51,7 +52,8 @@ PANOPTIC_DIR=../Panoptic ./tests/e2e.sh
 ```
 
 Set `E2E_MANAGE_DOCKER=0` when the testbed is already running. `BASE_URL`
-defaults to `http://127.0.0.1:8080`.
+defaults to `http://127.0.0.1:8080` and `RAW_BASE_URL` to
+`http://127.0.0.1:8081`.
 
 ## Coverage
 
@@ -76,15 +78,52 @@ defaults to `http://127.0.0.1:8080`.
 | Redirect | `redirect.php` | Redirect following enabled and disabled |
 | Authenticated request | `auth.php` | `--cookie panoptic_auth=allowed` |
 | Negative control | `safe.php` | Reflected candidate produces no finding |
+| Raw path traversal | `raw` service `/view/...` | `--path-based --prefix ../ --multiplier 4` sends literal `../` |
+| POST with query gate | `post_query.php?action=view` | `--data file=FUZZ` (or `--param file`) keeps the query string |
+| XML body | `xml_body.php` | `--data '<req><file>FUZZ</file></req>'` with `Content-Type: application/xml` |
+| Backslash traversal | `backslash.php` | Simulator: `--prefix '..\'` bypasses a `../` filter |
+| Reflected encodings | `reflected_encoded.php` | Negative control under `--base64` and `--prefix ../` |
+| Dynamic soft 404 | `soft404_dynamic.php` | Negative control: random token and timestamp on every 200 |
+| Dynamic page | `dynamic_vuln.php` | Real sink inside a randomized page |
+| Hostile passwd | `hostile_passwd.php` | Escape-sequence, relative, and formula homes stay inert |
 | Windows JSON | `windows_json.php` | Explicit Windows/backslash simulator |
 | Dynamic passwd parsing | `parser.php` | `/etc/passwd` expands a controlled home file |
 | Dynamic MySQL parsing | `parser.php` | `mysql-bin.index` expands a controlled binlog |
 | Artifacts | Multiple | JSON, CSV, `--write-files`, redaction, modes, and resume |
 
-The legacy NUL and Windows endpoints are labeled simulators because supported
-PHP correctly rejects NUL-containing include paths and the default container is
-Linux. Their purpose is to test Panoptic's payload construction without adding
-an obsolete PHP runtime or a second operating system.
+The legacy NUL, Windows, and backslash endpoints are labeled simulators
+because supported PHP correctly rejects NUL-containing include paths and the
+default container is Linux. Their purpose is to test Panoptic's payload
+construction without adding an obsolete PHP runtime or a second operating
+system.
+
+### Raw-path service
+
+Apache resolves `.` and `..` segments in the request path before PHP runs, so
+it cannot test a literal `../` in the URL path. The `raw` Compose service runs
+the same image with PHP's built-in server (`php -S`) and `raw/router.php`.
+That server leaves `REQUEST_URI` exactly as received (it normalizes only
+`SCRIPT_NAME` and `PHP_SELF`), and the router strips `/view/` and includes the
+rest relative to `/opt/panoptic-raw/files`. A client that collapses dot
+segments sends `/opt/panoptic-fixtures/proof.txt` instead and receives
+`404 Unknown route`:
+
+```bash
+curl --path-as-is \
+  "http://127.0.0.1:8081/view/../../../../opt/panoptic-fixtures/proof.txt"
+# 200 PANOPTIC_E2E_PROOF_4f6c8a71
+curl "http://127.0.0.1:8081/view/../../../../opt/panoptic-fixtures/proof.txt"
+# 404 Unknown route (curl collapses the path by default)
+```
+
+### Hostile passwd
+
+`hostile_passwd.php` serves `fixtures/passwd-hostile` for `/etc/passwd`. Its
+homes contain a CSI colour sequence and an OSC title sequence, a relative path
+(`relative/../../x`), a formula (`=HYPERLINK(1)`), and one normal home,
+`/home/hostile-ok`, which holds `.profile`. Every requested path is logged on
+the container's `/tmp`; `hostile_log.php` returns the log (GET) or clears it
+(POST), so the runner can prove that no hostile home was expanded.
 
 ## A few manual examples
 
@@ -127,7 +166,7 @@ The negative control should report no findings.
 ## Testbed boundaries
 
 - No host files or Docker sockets are mounted into the container.
-- The published port is restricted to IPv4 loopback.
+- The published ports are restricted to IPv4 loopback.
 - The container filesystem is read-only except for isolated temporary filesystems.
 - Credentials and file contents are synthetic.
 - The supported PHP Apache image is used so unrelated legacy-runtime flaws are

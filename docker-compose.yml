@@ -1,6 +1,6 @@
 services:
   web:
-    build:
+    build: &testbed-build
       context: .
       dockerfile: Dockerfile
     init: true
@@ -20,6 +20,43 @@ services:
         - php
         - -r
         - 'exit(@file_get_contents("http://127.0.0.1/health.php") === "ok\n" ? 0 : 1);'
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+
+  # Same image, served by PHP's built-in server instead of Apache. Apache
+  # resolves ../ in the request path before PHP runs; this service hands the
+  # raw request target to raw/router.php so literal ../ path traversal can be
+  # tested. See the router for details.
+  raw:
+    build: *testbed-build
+    command:
+      - php
+      - -S
+      - 0.0.0.0:8081
+      - -t
+      - /opt/panoptic-raw/files
+      - /opt/panoptic-raw/router.php
+    user: www-data
+    environment:
+      PHP_CLI_SERVER_WORKERS: "4"
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 50
+    mem_limit: 128m
+    ports:
+      - "127.0.0.1:8081:8081"
+    tmpfs:
+      - /tmp:mode=1777
+    healthcheck:
+      test:
+        - CMD
+        - php
+        - -r
+        - 'exit(@file_get_contents("http://127.0.0.1:8081/health") === "ok\n" ? 0 : 1);'
       interval: 2s
       timeout: 2s
       retries: 15

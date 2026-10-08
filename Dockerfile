@@ -17,20 +17,31 @@ RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf
 
 COPY src/ /var/www/html/
 RUN useradd --no-create-home --home-dir /home/panoptic --shell /bin/sh panoptic \
-    && install -d -o panoptic -g panoptic -m 0755 /home/panoptic
+    && install -d -o panoptic -g panoptic -m 0755 /home/panoptic \
+    && install -d -m 0755 /home/hostile-ok
 
 COPY fixtures/proof.txt /opt/panoptic-fixtures/proof.txt
 COPY fixtures/windows-win.ini /opt/panoptic-fixtures/windows-win.ini
 COPY fixtures/passwd /opt/panoptic-fixtures/passwd
+COPY fixtures/passwd-hostile /opt/panoptic-fixtures/passwd-hostile
 COPY fixtures/bash_history /home/panoptic/.bash_history
 COPY fixtures/mysql-bin.index /var/log/mysql-bin.index
 COPY fixtures/mysql-bin.000001 /var/log/mysql-bin.000001
+COPY fixtures/hostile_profile /home/hostile-ok/.profile
+
+# Router and base directory for the "raw" Compose service, which runs PHP's
+# built-in server so literal ../ request paths reach PHP unnormalized.
+COPY raw/ /opt/panoptic-raw/
 
 RUN chown panoptic:panoptic /home/panoptic/.bash_history \
     && chmod 0644 \
         /opt/panoptic-fixtures/proof.txt \
         /opt/panoptic-fixtures/windows-win.ini \
         /opt/panoptic-fixtures/passwd \
+        /opt/panoptic-fixtures/passwd-hostile \
+        /home/hostile-ok/.profile \
+        /opt/panoptic-raw/router.php \
+        /opt/panoptic-raw/files/placeholder.txt \
         /home/panoptic/.bash_history \
         /var/log/mysql-bin.index \
         /var/log/mysql-bin.000001 \

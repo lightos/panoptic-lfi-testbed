@@ -186,6 +186,52 @@ $proofPath = "/opt/panoptic-fixtures/proof.txt";
         </article>
     </div>
 
+    <h2>Raw paths, request shapes, and hostile responses</h2>
+    <div class="grid">
+        <article>
+            <h3>Raw path traversal</h3>
+            <p>Served by the separate <code>raw</code> service on port 8081 (PHP's
+            built-in server), which sees literal <code>../</code> before normalization.</p>
+            <code>:8081/view/placeholder.txt --path-based --prefix "../" --multiplier 4</code>
+        </article>
+        <article>
+            <h3>POST with query gate</h3>
+            <p>Body field <code>file</code> is used only when <code>?action=view</code> is present.</p>
+            <code>post_query.php?action=view --data "file=FUZZ"</code>
+        </article>
+        <article>
+            <h3>XML body</h3>
+            <p>Requires <code>Content-Type: application/xml</code>; XXE stays disabled.</p>
+            <code>--data "&lt;req&gt;&lt;file&gt;FUZZ&lt;/file&gt;&lt;/req&gt;"</code>
+        </article>
+        <article>
+            <h3>Backslash traversal simulator</h3>
+            <p>Strips <code>../</code>, then converts <code>\</code> to <code>/</code>.</p>
+            <code>backslash.php --prefix "..\" --multiplier 4</code>
+        </article>
+        <article>
+            <h3>Reflected encodings (negative)</h3>
+            <p>Echoes the parameter verbatim, URL-decoded, and Base64-decoded.</p>
+            <a href="reflected_encoded.php?file=test.txt"><code>reflected_encoded.php?file=test.txt</code></a>
+        </article>
+        <article>
+            <h3>Dynamic soft 404 (negative)</h3>
+            <p>HTTP 200 with a random token and timestamp; never reads files.</p>
+            <a href="soft404_dynamic.php?file=test.txt"><code>soft404_dynamic.php?file=test.txt</code></a>
+        </article>
+        <article>
+            <h3>Dynamic page</h3>
+            <p>The same randomized layout around a real inclusion sink.</p>
+            <a href="dynamic_vuln.php?file=test.txt"><code>dynamic_vuln.php?file=test.txt</code></a>
+        </article>
+        <article>
+            <h3>Hostile passwd</h3>
+            <p>Homes with terminal escapes, a relative path, and a formula, plus one
+            real home. Requests are logged in <code>hostile_log.php</code>.</p>
+            <code>hostile_passwd.php?file=test.txt</code>
+        </article>
+    </div>
+
     <footer>
         Deterministic proof path: <code><?php echo $proofPath; ?></code>.
         See the repository README for the complete E2E matrix.

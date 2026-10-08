@@ -24,6 +24,11 @@ Run the testbed matrix:
 PANOPTIC_DIR=../Panoptic ./tests/e2e.sh
 ```
 
+Compose starts two services from the same image: `web` (Apache, port 8080)
+and `raw` (PHP's built-in server with `raw/router.php`, port 8081), which
+receives request paths before any `../` normalization. Both have health checks,
+so `docker compose up --wait` returns only when both are ready.
+
 `tests/e2e.sh` owns the Compose lifecycle by default. To run the Python matrix
 against an already-running target:
 
@@ -40,7 +45,8 @@ Environment variables:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PANOPTIC_DIR` | Installed Python package | Add a Panoptic checkout to `PYTHONPATH` |
-| `BASE_URL` | `http://127.0.0.1:8080` | Override the local target URL |
+| `BASE_URL` | `http://127.0.0.1:8080` | Override the Apache target URL |
+| `RAW_BASE_URL` | `http://127.0.0.1:8081` | Override the raw-path (`php -S`) target URL |
 | `E2E_MANAGE_DOCKER` | `1` | Set to `0` to preserve an existing Compose stack |
 
 The runner uses temporary output directories and verifies:
@@ -51,7 +57,10 @@ The runner uses temporary output directories and verifies:
 - owner-only result and retrieved-file modes on POSIX;
 - `--write-files` content;
 - resume checkpoint behavior;
-- dynamic passwd/home and MySQL binlog case expansion.
+- dynamic passwd/home and MySQL binlog case expansion;
+- hostile passwd parsing: no escape bytes in stdout, stderr, the log file, or
+  results; no formula-leading CSV cells; and no requests for invalid homes,
+  checked against the endpoint's request log.
 
 ## GitHub Actions
 
@@ -61,12 +70,13 @@ tag, or commit. The workflow has read-only repository permissions.
 
 ## Adding a case
 
-1. Add a PHP endpoint under `src/`.
+1. Add a PHP endpoint under `src/`. Only cases that need the raw request
+   target belong in `raw/router.php`.
 2. Prefer `/opt/panoptic-fixtures/proof.txt` as the positive target.
 3. Add a custom list under `tests/lists/` only when the path differs.
 4. Add a `ScanCase` in `tests/run_e2e.py`.
 5. Assert an exact result set unless dynamic expansion is the behavior under test.
-6. Add the endpoint to the coverage table in `README.md`.
+6. Add the endpoint to the coverage table in `README.md` and to `src/index.php`.
 
 Do not introduce real credentials, host mounts, cloud deployment definitions,
 or a non-loopback port mapping.

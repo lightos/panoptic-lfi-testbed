@@ -1,0 +1,4 @@
+esc:x:1001:1001:Escape:/home/[31mred]0;pwned:/bin/sh
+rel:x:1002:1002:Relative:relative/../../x:/bin/sh
+formula:x:1003:1003:Formula:=HYPERLINK(1):/bin/sh
+hostile:x:1004:1004:Panoptic hostile E2E:/home/hostile-ok:/bin/sh

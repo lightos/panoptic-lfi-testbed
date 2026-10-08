@@ -19,12 +19,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 LISTS = ROOT / "tests" / "lists"
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8080").rstrip("/")
+# PHP built-in server (Compose service "raw") that sees the request target
+# before any ../ normalization; Apache would resolve the dot segments first.
+RAW_BASE_URL = os.environ.get("RAW_BASE_URL", "http://127.0.0.1:8081").rstrip("/")
 PROOF_PATH = "/opt/panoptic-fixtures/proof.txt"
 PASSWD_PATH = "/etc/passwd"
 HOME_PATH = "/home/panoptic/.bash_history"
 MYSQL_INDEX_PATH = "/var/log/mysql-bin.index"
 MYSQL_LOG_PATH = "/var/log/mysql-bin.000001"
 WINDOWS_PATH = r"C:\Windows\win.ini"
+HOSTILE_HOME = "/home/hostile-ok"
+HOSTILE_HOME_PATH = f"{HOSTILE_HOME}/.profile"
 
 
 @dataclass(frozen=True)
@@ -53,19 +58,25 @@ def panoptic_environment() -> dict[str, str]:
     return env
 
 
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def wait_until_healthy(timeout: float = 45.0) -> None:
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    deadline = time.monotonic() + timeout
-    last_error: Exception | None = None
-    while time.monotonic() < deadline:
-        try:
-            with opener.open(f"{BASE_URL}/health.php", timeout=2) as response:
-                if response.status == 200 and response.read() == b"ok\n":
-                    return
-        except (OSError, urllib.error.URLError) as exc:
-            last_error = exc
-        time.sleep(0.5)
-    raise RuntimeError(f"testbed did not become healthy: {last_error}")
+    for health_url in (f"{BASE_URL}/health.php", f"{RAW_BASE_URL}/health"):
+        deadline = time.monotonic() + timeout
+        last_error: Exception | None = None
+        while True:
+            try:
+                with OPENER.open(health_url, timeout=2) as response:
+                    if response.status == 200 and response.read() == b"ok\n":
+                        break
+            except (OSError, urllib.error.URLError) as exc:
+                last_error = exc
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"testbed did not become healthy at {health_url}: {last_error}"
+                )
+            time.sleep(0.5)
 
 
 def invoke(
@@ -475,6 +486,186 @@ def run_matrix(temp_root: Path, env: dict[str, str]) -> None:
             frozenset({WINDOWS_PATH}),
             list_file="windows.txt",
         ),
+        # Literal ../ in the URL path, served by the "raw" PHP built-in server
+        # whose router reads REQUEST_URI unnormalized. A client that collapses
+        # dot segments sends GET /opt/panoptic-fixtures/proof.txt instead,
+        # which the router answers with 404 "Unknown route", so this case
+        # yields no finding on Panoptic before lightos/Panoptic#34 (verified
+        # against c47ef9f). Reproduce the collapse with curl:
+        #   curl --path-as-is $RAW_BASE_URL/view/../../../../opt/panoptic-fixtures/proof.txt
+        #     -> 200 PANOPTIC_E2E_PROOF_4f6c8a71
+        #   curl $RAW_BASE_URL/view/../../../../opt/panoptic-fixtures/proof.txt
+        #     -> 404 Unknown route (curl collapses the path by default)
+        ScanCase(
+            "raw-path-traversal",
+            (
+                "--url",
+                f"{RAW_BASE_URL}/view/placeholder.txt",
+                "--path-based",
+                "--prefix",
+                "../",
+                "--multiplier",
+                "4",
+                "--skip-parsing",
+            ),
+            proof,
+        ),
+        # Without traversal the router confines paths to its base directory.
+        ScanCase(
+            "raw-path-without-traversal",
+            (
+                "--url",
+                f"{RAW_BASE_URL}/view/placeholder.txt",
+                "--path-based",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
+        ScanCase(
+            "post-query-string",
+            (
+                "--url",
+                f"{BASE_URL}/post_query.php?action=view",
+                "--data",
+                "file=FUZZ",
+                "--skip-parsing",
+            ),
+            proof,
+            assert_redacted=True,
+        ),
+        ScanCase(
+            "post-query-string-param",
+            (
+                "--url",
+                f"{BASE_URL}/post_query.php?action=view",
+                "--data",
+                "file=test.txt",
+                "--param",
+                "file",
+                "--skip-parsing",
+            ),
+            proof,
+            assert_redacted=True,
+        ),
+        # The sink ignores the body unless ?action=view reaches the server.
+        ScanCase(
+            "post-query-string-missing-action",
+            (
+                "--url",
+                f"{BASE_URL}/post_query.php",
+                "--data",
+                "file=FUZZ",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
+        ScanCase(
+            "xml-body",
+            (
+                "--url",
+                f"{BASE_URL}/xml_body.php",
+                "--data",
+                "<req><file>FUZZ</file></req>",
+                "--header",
+                "Content-Type: application/xml",
+                "--skip-parsing",
+            ),
+            proof,
+        ),
+        # Without the explicit header Panoptic sends a form content type,
+        # which the endpoint rejects with 415.
+        ScanCase(
+            "xml-body-wrong-content-type",
+            (
+                "--url",
+                f"{BASE_URL}/xml_body.php",
+                "--data",
+                "<req><file>FUZZ</file></req>",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
+        ScanCase(
+            "backslash-traversal",
+            (
+                "--url",
+                f"{BASE_URL}/backslash.php?file=test.txt",
+                "--param",
+                "file",
+                "--prefix",
+                "..\\",
+                "--multiplier",
+                "4",
+                "--skip-parsing",
+            ),
+            proof,
+            assert_redacted=True,
+        ),
+        # The same filter strips forward-slash traversal.
+        ScanCase(
+            "backslash-filter-blocks-forward-slash",
+            (
+                "--url",
+                f"{BASE_URL}/backslash.php?file=test.txt",
+                "--param",
+                "file",
+                "--prefix",
+                "../",
+                "--multiplier",
+                "4",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
+        ScanCase(
+            "reflected-encoded-base64",
+            (
+                "--url",
+                f"{BASE_URL}/reflected_encoded.php?file=dGVzdC50eHQ=",
+                "--param",
+                "file",
+                "--base64",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
+        ScanCase(
+            "reflected-encoded-prefix",
+            (
+                "--url",
+                f"{BASE_URL}/reflected_encoded.php?file=test.txt",
+                "--param",
+                "file",
+                "--prefix",
+                "../",
+                "--multiplier",
+                "4",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
+        ScanCase(
+            "dynamic-soft-404",
+            (
+                "--url",
+                f"{BASE_URL}/soft404_dynamic.php?file=test.txt",
+                "--param",
+                "file",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
+        ScanCase(
+            "dynamic-vulnerable",
+            (
+                "--url",
+                f"{BASE_URL}/dynamic_vuln.php?file=test.txt",
+                "--param",
+                "file",
+                "--skip-parsing",
+            ),
+            proof,
+        ),
         ScanCase(
             "passwd-home-expansion",
             (
@@ -628,12 +819,116 @@ def run_artifact_checks(temp_root: Path, env: dict[str, str]) -> None:
     print("[PASS] resume checkpoint")
 
 
+def hostile_request_log(*, reset: bool = False) -> list[object]:
+    """Read (or clear, with ``reset``) the hostile_passwd.php request log."""
+    request = urllib.request.Request(
+        f"{BASE_URL}/hostile_log.php",
+        data=b"" if reset else None,
+        method="POST" if reset else "GET",
+    )
+    with OPENER.open(request, timeout=5) as response:
+        value = json.loads(response.read().decode("utf-8"))
+    if not isinstance(value, list):
+        raise AssertionError(f"hostile request log is not a list: {value!r}")
+    return value
+
+
+def run_hostile_passwd_checks(temp_root: Path, env: dict[str, str]) -> None:
+    """Parse a hostile /etc/passwd and check that hostile homes stay inert.
+
+    The fixture has homes with terminal escapes (CSI colour and OSC title),
+    a relative path and a spreadsheet formula, plus one normal home holding
+    a real file. Only the normal home may be expanded, and no escape byte or
+    formula may reach any console, log, or result artifact.
+    """
+    expected = frozenset({PASSWD_PATH, HOSTILE_HOME_PATH})
+    forbidden_cell_starts = ("=", "+", "-", "@", "\t", "\r")
+    for output_format, output_name in (("json", "results.json"), ("csv", "results.csv")):
+        name = f"hostile-passwd-{output_format}"
+        work_dir = temp_root / name
+        work_dir.mkdir()
+        log_path = work_dir / "scan.log"
+        hostile_request_log(reset=True)
+        completed, output_path = invoke(
+            name=name,
+            args=(
+                "--url",
+                f"{BASE_URL}/hostile_passwd.php?file=test.txt",
+                "--param",
+                "file",
+                "--concurrency",
+                "16",
+                "--log-file",
+                str(log_path),
+            ),
+            list_file="passwd.txt",
+            work_dir=work_dir,
+            env=env,
+            output_format=output_format,
+            output_name=output_name,
+        )
+        requested = hostile_request_log()
+
+        if not log_path.is_file():
+            raise AssertionError(f"{name}: --log-file was not created")
+        artifacts = {
+            "stdout": completed.stdout.encode("utf-8"),
+            "stderr": completed.stderr.encode("utf-8"),
+            "log file": log_path.read_bytes(),
+            "output file": output_path.read_bytes(),
+        }
+        for label, content in artifacts.items():
+            if b"\x1b" in content or b"\\u001b" in content.lower():
+                raise AssertionError(f"{name}: escape sequence reached the {label}")
+            if b"HYPERLINK" in content or b"relative/" in content:
+                raise AssertionError(f"{name}: hostile home reached the {label}")
+
+        if output_format == "json":
+            results = load_json(output_path)
+        else:
+            with output_path.open(newline="", encoding="utf-8") as stream:
+                rows = list(csv.reader(stream))
+            for row in rows:
+                for cell in row:
+                    if cell.startswith(forbidden_cell_starts):
+                        raise AssertionError(
+                            f"{name}: CSV cell starts with a formula character: {cell!r}"
+                        )
+            header, *records = rows
+            results = [dict(zip(header, record, strict=True)) for record in records]
+            for result in results:
+                result["found"] = result.get("found") == "True"
+        assert_locations(name=name, results=results, expected=expected, exact=True)
+
+        # Every request must be the original page, the random baseline,
+        # /etc/passwd, or a dotfile under the one valid home directory.
+        strays = [
+            path
+            for path in requested
+            if not isinstance(path, str)
+            or not (
+                path in {"test.txt", PASSWD_PATH}
+                or path.startswith(f"{HOSTILE_HOME}/")
+                or (len(path) == 16 and all(c in "0123456789abcdef" for c in path))
+            )
+        ]
+        if strays:
+            raise AssertionError(f"{name}: requests outside the valid home: {strays}")
+        if HOSTILE_HOME_PATH not in requested:
+            raise AssertionError(f"{name}: the valid home was not expanded")
+        print(
+            f"[PASS] {name}: {len(results)} finding(s), "
+            f"{len(requested)} request(s) all within allowed paths"
+        )
+
+
 def main() -> int:
     env = panoptic_environment()
     wait_until_healthy()
     with tempfile.TemporaryDirectory(prefix="panoptic-testbed-e2e-") as directory:
         temp_root = Path(directory)
         run_matrix(temp_root, env)
+        run_hostile_passwd_checks(temp_root, env)
         run_artifact_checks(temp_root, env)
     print("All Panoptic E2E cases passed.")
     return 0

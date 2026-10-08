@@ -82,6 +82,7 @@ defaults to `http://127.0.0.1:8080` and `RAW_BASE_URL` to
 | POST with query gate | `post_query.php?action=view` | `--data file=FUZZ` (or `--param file`) keeps the query string |
 | XML body | `xml_body.php` | `--data '<req><file>FUZZ</file></req>'` with `Content-Type: application/xml` |
 | Backslash traversal | `backslash.php` | Simulator: `--prefix '..\'` bypasses a `../` filter |
+| Double-decode filter | `double_decode_filter.php` | `--prefix '..%252f'` bypasses a single-decode `../` filter; plain `../` is blocked |
 | Reflected encodings | `reflected_encoded.php` | Negative control under `--base64` and `--prefix ../` |
 | Dynamic soft 404 | `soft404_dynamic.php` | Negative control: random token and timestamp on every 200 |
 | Dynamic page | `dynamic_vuln.php` | Real sink inside a randomized page |

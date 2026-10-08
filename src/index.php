@@ -210,6 +210,11 @@ $proofPath = "/opt/panoptic-fixtures/proof.txt";
             <code>backslash.php --prefix "..\" --multiplier 4</code>
         </article>
         <article>
+            <h3>Double-decode filter</h3>
+            <p>Rejects <code>../</code> after one decode, then decodes again before including.</p>
+            <code>double_decode_filter.php --prefix "..%252f" --multiplier 6</code>
+        </article>
+        <article>
             <h3>Reflected encodings (negative)</h3>
             <p>Echoes the parameter verbatim, URL-decoded, and Base64-decoded.</p>
             <a href="reflected_encoded.php?file=test.txt"><code>reflected_encoded.php?file=test.txt</code></a>

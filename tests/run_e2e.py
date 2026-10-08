@@ -625,6 +625,52 @@ def run_matrix(temp_root: Path, env: dict[str, str]) -> None:
             ),
             empty,
         ),
+        # A filter that decodes once and rejects "../": the double-encoded
+        # slash only becomes "/" at the application's second decode.
+        ScanCase(
+            "double-decode-filter-bypass",
+            (
+                "--url",
+                f"{BASE_URL}/double_decode_filter.php?file=test.txt",
+                "--param",
+                "file",
+                "--prefix",
+                "..%252f",
+                "--multiplier",
+                "6",
+                "--skip-parsing",
+            ),
+            proof,
+            assert_redacted=True,
+        ),
+        # Controls: plain traversal is blocked by the filter, and absolute
+        # paths cannot escape the themes/ base directory.
+        ScanCase(
+            "double-decode-filter-blocks-plain",
+            (
+                "--url",
+                f"{BASE_URL}/double_decode_filter.php?file=test.txt",
+                "--param",
+                "file",
+                "--prefix",
+                "../",
+                "--multiplier",
+                "6",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
+        ScanCase(
+            "double-decode-filter-no-prefix",
+            (
+                "--url",
+                f"{BASE_URL}/double_decode_filter.php?file=test.txt",
+                "--param",
+                "file",
+                "--skip-parsing",
+            ),
+            empty,
+        ),
         ScanCase(
             "reflected-encoded-base64",
             (

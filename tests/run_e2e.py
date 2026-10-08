@@ -812,7 +812,10 @@ def run_artifact_checks(temp_root: Path, env: dict[str, str]) -> None:
         exact=True,
     )
     checkpoint = json.loads(resume_file.read_text(encoding="utf-8"))
-    if checkpoint.get("version") != 2 or len(checkpoint.get("completed_ids", [])) != 1:
+    # Panoptic bumps the version whenever stored data changes meaning; any
+    # current format (2+) carries findings, which resume-second relies on.
+    version = checkpoint.get("version")
+    if not isinstance(version, int) or version < 2 or len(checkpoint.get("completed_ids", [])) != 1:
         raise AssertionError(f"resume: malformed checkpoint: {checkpoint}")
     if BASE_URL in resume_file.read_text(encoding="utf-8"):
         raise AssertionError("resume: checkpoint leaked the target URL")
